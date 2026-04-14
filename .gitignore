@@ -1,0 +1,14 @@
+# Compiled binaries
+*.exe
+*.out
+*.bin
+
+# Output files
+results.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE settings
+.vscode/
