@@ -14,7 +14,6 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
-
 func main() {
 
 	var sites = make(map[string]*site.Site)
@@ -25,7 +24,7 @@ func main() {
 		id := strings.TrimPrefix(r.URL.Path, "/api/sites/")
 
 		switch r.Method {
-		
+
 		case http.MethodPost:
 			if !strings.HasSuffix(r.URL.Path, "/checks") {
 				http.Error(w, "not found", http.StatusNotFound)
@@ -63,12 +62,12 @@ func main() {
 			}
 
 			writeJSON(w, http.StatusOK, map[string]any{
-				"id": id,
-				"url": s.URL,
-				"status": s.Status,
+				"id":            id,
+				"url":           s.URL,
+				"status":        s.Status,
 				"response_time": s.ResponseTime,
-				"is_up": s.IsUp,
-				"check_count": s.CheckCount,
+				"is_up":         s.IsUp,
+				"check_count":   s.CheckCount,
 			})
 
 		case http.MethodDelete:
@@ -124,12 +123,12 @@ func main() {
 			result := make([]map[string]any, 0)
 			for id, s := range sites {
 				result = append(result, map[string]any{
-					"id": id,
-					"url": s.URL,
-					"status": s.Status,
+					"id":            id,
+					"url":           s.URL,
+					"status":        s.Status,
 					"response_time": s.ResponseTime,
-					"is_up": s.IsUp,
-					"check_count": s.CheckCount,
+					"is_up":         s.IsUp,
+					"check_count":   s.CheckCount,
 				})
 			}
 			writeJSON(w, http.StatusOK, result)
