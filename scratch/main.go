@@ -16,7 +16,7 @@ func checkSite(ch chan site.CheckResult, url string) {
 func main() {
 	urls := []string{"google.com", "github.com", "linkedin.com", "tesla.com", "tesco.com", "thestudentroom.co.uk"}
 	ch := make(chan site.CheckResult)
-	
+
 	start := time.Now()
 
 	for _, url := range urls {
