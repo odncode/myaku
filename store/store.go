@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type Site struct {
@@ -28,6 +31,10 @@ type CheckResult struct {
 
 type Store struct {
 	pool *pgxpool.Pool
+}
+
+type Cache struct {
+	rdb *redis.Client
 }
 
 func (s *Store) Close() {
@@ -145,4 +152,51 @@ func (s *Store) GetChecks(siteID int) ([]CheckResult, error) {
 	}
 
 	return checks, nil
+}
+
+func NewCache() *Cache {
+	return &Cache{
+		rdb: redis.NewClient(&redis.Options{
+			Addr: "localhost:6379",
+		}),
+	}
+}
+
+func (c *Cache) CacheStatus(siteID int, site Site, ttl time.Duration) error {
+	key := "site:" + strconv.Itoa(siteID)
+
+	data, err := json.Marshal(site)
+	if err != nil {
+		return err
+	}
+	return c.rdb.Set(context.Background(), key, string(data), ttl).Err()
+}
+
+func (c *Cache) GetCachedStatus(siteID int) (Site, error) {
+	key := "site:" + strconv.Itoa(siteID)
+
+	val, err := c.rdb.Get(context.Background(), key).Result()
+
+	// cache hit
+	if err == nil {
+		var site Site
+		if err := json.Unmarshal([]byte(val), &site); err != nil {
+			return Site{}, err
+		}
+		return site, nil
+	}
+
+	// real Redis error
+	if err != redis.Nil {
+		return Site{}, err
+	}
+
+	// cache miss → YOU SHOULD FETCH FROM DB HERE (not cache)
+	return Site{}, redis.Nil
+}
+
+func (c *Cache) InvalidateCache(siteID int) error {
+	key := "site:" + strconv.Itoa(siteID)
+
+	return c.rdb.Del(context.Background(), key).Err()
 }
