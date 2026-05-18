@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Myaku</title>
+</head>
+
+<body>
+
+    <h1>Myaku</h1>
+
+    <input type="text" id="urlInput" placeholder="Enter website URL">
+
+    <button id="addBtn">
+        Add Site
+    </button>
+
+    <ul id="siteList"></ul>
+
+    <script>
+
+        async function loadSites() {
+
+            const res = await fetch("/api/sites")
+
+            const sites = await res.json()
+
+            const siteList = document.getElementById("siteList")
+
+            siteList.innerHTML = ""
+
+            for (const site of sites) {
+
+                const li = document.createElement("li")
+
+                li.innerHTML = `
+          ${site.url} - ${site.status}
+
+          <button onclick="checkSite(${site.id})">
+            Check Now
+          </button>
+
+          <button onclick="deleteSite(${site.id})">
+            Delete
+          </button>
+        `
+
+                siteList.appendChild(li)
+            }
+        }
+
+        async function checkSite(id) {
+
+            await fetch(`/api/sites/${id}/checks`, {
+                method: "POST"
+            })
+
+            await loadSites()
+        }
+
+        async function deleteSite(id) {
+
+            await fetch(`/api/sites/${id}`, {
+                method: "DELETE"
+            })
+
+            await loadSites()
+        }
+
+        const addBtn = document.getElementById("addBtn")
+
+        addBtn.addEventListener("click", async function () {
+
+            const input = document.getElementById("urlInput")
+
+            const url = input.value
+
+            await fetch("/api/sites", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    url: url
+                })
+            })
+
+            input.value = ""
+
+            await loadSites()
+        })
+
+        loadSites()
+
+        setInterval(loadSites, 10000)
+
+    </script>
+
+</body>
+
+</html>

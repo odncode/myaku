@@ -3,9 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"myaku/uptime-cli/site"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
+
+	"myaku/store"
+	"myaku/uptime-cli/site"
 )
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
@@ -16,68 +20,134 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 
 func main() {
 
-	var sites = make(map[string]*site.Site)
-	var counterID = 0
+	db, err := store.NewStore("postgres://localhost:5432/myaku")
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+
+	cache := store.NewCache()
 
 	http.HandleFunc("/api/sites/", func(w http.ResponseWriter, r *http.Request) {
 
-		id := strings.TrimPrefix(r.URL.Path, "/api/sites/")
+		idStr := strings.TrimPrefix(r.URL.Path, "/api/sites/")
 
 		switch r.Method {
 
 		case http.MethodPost:
+
+			// POST /api/sites/{id}/checks
 			if !strings.HasSuffix(r.URL.Path, "/checks") {
 				http.Error(w, "not found", http.StatusNotFound)
 				return
 			}
 
-			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/sites/"), "/checks")
+			idStr = strings.TrimSuffix(
+				strings.TrimPrefix(r.URL.Path, "/api/sites/"),
+				"/checks",
+			)
 
-			s, exists := sites[id]
-			if !exists {
+			siteID, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
+
+			s, err := db.GetSite(siteID)
+			if err != nil {
 				http.Error(w, "site not found", http.StatusNotFound)
 				return
 			}
 
-			result, err := s.PerformCheck()
-
-			// update stored site
-			s.ResponseTime = result.ResponseTime
-			s.IsUp = result.IsUp
-			s.CheckCount++
-
-			if err != nil {
-				s.Status = "down"
-			} else {
-				s.Status = fmt.Sprintf("%d", result.StatusCode)
+			checkSite := &site.Site{
+				URL: s.URL,
 			}
+
+			result, err := checkSite.PerformCheck()
+
+			status := "down"
+			if err == nil {
+				status = fmt.Sprintf("%d", result.StatusCode)
+			}
+
+			err = db.AddCheck(siteID, store.CheckResult{
+				StatusCode:   result.StatusCode,
+				ResponseTime: result.ResponseTime,
+				IsUp:         result.IsUp,
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			err = db.UpdateSiteStatus(
+				siteID,
+				status,
+				result.ResponseTime,
+				result.IsUp,
+				s.CheckCount+1,
+			)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			updatedSite := store.Site{
+				ID:           siteID,
+				URL:          s.URL,
+				Status:       status,
+				IsUp:         result.IsUp,
+				ResponseTime: result.ResponseTime,
+				CheckCount:   s.CheckCount + 1,
+			}
+
+			cache.CacheStatus(siteID, updatedSite, 30*time.Second)
 
 			writeJSON(w, http.StatusOK, result)
 
 		case http.MethodGet:
-			s, exists := sites[id]
-			if !exists {
+
+			siteID, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
+
+			// try cache first
+			cachedSite, err := cache.GetCachedStatus(siteID)
+
+			if err == nil {
+				writeJSON(w, http.StatusOK, cachedSite)
+				return
+			}
+
+			// fallback to DB
+			s, err := db.GetSite(siteID)
+			if err != nil {
 				http.Error(w, "site not found", http.StatusNotFound)
 				return
 			}
 
-			writeJSON(w, http.StatusOK, map[string]any{
-				"id":            id,
-				"url":           s.URL,
-				"status":        s.Status,
-				"response_time": s.ResponseTime,
-				"is_up":         s.IsUp,
-				"check_count":   s.CheckCount,
-			})
+			cache.CacheStatus(siteID, s, 30*time.Second)
+
+			writeJSON(w, http.StatusOK, s)
 
 		case http.MethodDelete:
-			_, exists := sites[id]
-			if !exists {
-				http.Error(w, "site not found", http.StatusNotFound)
+
+			siteID, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
 				return
 			}
 
-			delete(sites, id)
+			err = db.DeleteSite(siteID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			cache.InvalidateCache(siteID)
+
 			w.WriteHeader(http.StatusNoContent)
 
 		default:
@@ -86,9 +156,11 @@ func main() {
 	})
 
 	http.HandleFunc("/api/sites", func(w http.ResponseWriter, r *http.Request) {
+
 		switch r.Method {
 
 		case http.MethodPost:
+
 			var input struct {
 				URL string `json:"url"`
 			}
@@ -103,42 +175,35 @@ func main() {
 				input.URL = "https://" + input.URL
 			}
 
-			id := fmt.Sprintf("site_%d", counterID)
-
-			s := &site.Site{
-				URL:    input.URL,
-				Status: "Unknown",
+			newID, err := db.AddSite(input.URL)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
 			}
 
-			sites[id] = s
-			counterID++
-
 			writeJSON(w, http.StatusCreated, map[string]any{
-				"id":     id,
-				"url":    s.URL,
-				"status": s.Status,
+				"id":     newID,
+				"url":    input.URL,
+				"status": "unknown",
 			})
 
 		case http.MethodGet:
-			result := make([]map[string]any, 0)
-			for id, s := range sites {
-				result = append(result, map[string]any{
-					"id":            id,
-					"url":           s.URL,
-					"status":        s.Status,
-					"response_time": s.ResponseTime,
-					"is_up":         s.IsUp,
-					"check_count":   s.CheckCount,
-				})
+
+			sites, err := db.ListSites()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
 			}
-			writeJSON(w, http.StatusOK, result)
+
+			writeJSON(w, http.StatusOK, sites)
 
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 
-	fmt.Println("Server is running on :8081")
-	http.ListenAndServe(":8081", nil)
+	http.Handle("/", http.FileServer(http.Dir("./static")))
 
+	fmt.Println("Server running on :8081")
+	http.ListenAndServe(":8081", nil)
 }
