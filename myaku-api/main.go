@@ -3,171 +3,57 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"myaku/store"
+	"myaku/uptime-cli/site"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
-
-	"myaku/store"
-	"myaku/uptime-cli/site"
 )
 
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 func main() {
 
-	db, err := store.NewStore("postgres://localhost:5432/myaku")
+	// ================= DB =================
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "postgres://localhost:5432/myaku"
+	}
+
+	db, err := store.NewStore(dbURL)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	defer db.Close()
 
-	cache := store.NewCache()
+	// ================= CACHE =================
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		redisURL = "localhost:6379"
+	}
 
-	http.HandleFunc("/api/sites/", func(w http.ResponseWriter, r *http.Request) {
+	cache := store.NewCache(redisURL)
 
-		idStr := strings.TrimPrefix(r.URL.Path, "/api/sites/")
-
-		switch r.Method {
-
-		case http.MethodPost:
-
-			// POST /api/sites/{id}/checks
-			if !strings.HasSuffix(r.URL.Path, "/checks") {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
-
-			idStr = strings.TrimSuffix(
-				strings.TrimPrefix(r.URL.Path, "/api/sites/"),
-				"/checks",
-			)
-
-			siteID, err := strconv.Atoi(idStr)
-			if err != nil {
-				http.Error(w, "invalid id", http.StatusBadRequest)
-				return
-			}
-
-			s, err := db.GetSite(siteID)
-			if err != nil {
-				http.Error(w, "site not found", http.StatusNotFound)
-				return
-			}
-
-			checkSite := &site.Site{
-				URL: s.URL,
-			}
-
-			result, err := checkSite.PerformCheck()
-
-			status := "down"
-			if err == nil {
-				status = fmt.Sprintf("%d", result.StatusCode)
-			}
-
-			err = db.AddCheck(siteID, store.CheckResult{
-				StatusCode:   result.StatusCode,
-				ResponseTime: result.ResponseTime,
-				IsUp:         result.IsUp,
-			})
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			err = db.UpdateSiteStatus(
-				siteID,
-				status,
-				result.ResponseTime,
-				result.IsUp,
-				s.CheckCount+1,
-			)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			updatedSite := store.Site{
-				ID:           siteID,
-				URL:          s.URL,
-				Status:       status,
-				IsUp:         result.IsUp,
-				ResponseTime: result.ResponseTime,
-				CheckCount:   s.CheckCount + 1,
-			}
-
-			cache.CacheStatus(siteID, updatedSite, 30*time.Second)
-
-			writeJSON(w, http.StatusOK, result)
-
-		case http.MethodGet:
-
-			siteID, err := strconv.Atoi(idStr)
-			if err != nil {
-				http.Error(w, "invalid id", http.StatusBadRequest)
-				return
-			}
-
-			// try cache first
-			cachedSite, err := cache.GetCachedStatus(siteID)
-
-			if err == nil {
-				writeJSON(w, http.StatusOK, cachedSite)
-				return
-			}
-
-			// fallback to DB
-			s, err := db.GetSite(siteID)
-			if err != nil {
-				http.Error(w, "site not found", http.StatusNotFound)
-				return
-			}
-
-			cache.CacheStatus(siteID, s, 30*time.Second)
-
-			writeJSON(w, http.StatusOK, s)
-
-		case http.MethodDelete:
-
-			siteID, err := strconv.Atoi(idStr)
-			if err != nil {
-				http.Error(w, "invalid id", http.StatusBadRequest)
-				return
-			}
-
-			err = db.DeleteSite(siteID)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			cache.InvalidateCache(siteID)
-
-			w.WriteHeader(http.StatusNoContent)
-
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
+	// ================= CREATE + LIST =================
 	http.HandleFunc("/api/sites", func(w http.ResponseWriter, r *http.Request) {
 
 		switch r.Method {
 
+		// CREATE SITE
 		case http.MethodPost:
-
 			var input struct {
 				URL string `json:"url"`
 			}
 
-			err := json.NewDecoder(r.Body).Decode(&input)
-			if err != nil {
-				http.Error(w, "invalid JSON", http.StatusBadRequest)
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
 
@@ -175,20 +61,20 @@ func main() {
 				input.URL = "https://" + input.URL
 			}
 
-			newID, err := db.AddSite(input.URL)
+			id, err := db.AddSite(input.URL)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 
-			writeJSON(w, http.StatusCreated, map[string]any{
-				"id":     newID,
-				"url":    input.URL,
-				"status": "unknown",
+			writeJSON(w, http.StatusCreated, store.Site{
+				ID:     id,
+				URL:    input.URL,
+				Status: "unknown",
 			})
 
+		// LIST SITES
 		case http.MethodGet:
-
 			sites, err := db.ListSites()
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -202,8 +88,115 @@ func main() {
 		}
 	})
 
+	// ================= SINGLE SITE OPS =================
+	http.HandleFunc("/api/sites/", func(w http.ResponseWriter, r *http.Request) {
+
+		idStr := strings.TrimPrefix(r.URL.Path, "/api/sites/")
+
+		// ---------------- CHECK SITE ----------------
+		if strings.HasSuffix(r.URL.Path, "/checks") && r.Method == http.MethodPost {
+
+			idStr = strings.TrimSuffix(idStr, "/checks")
+
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
+
+			siteRow, err := db.GetSite(id)
+			if err != nil {
+				http.Error(w, "site not found", http.StatusNotFound)
+				return
+			}
+
+			// 🔥 THIS IS THE ONLY CORRECT FIX
+			checker := site.Site{URL: siteRow.URL}
+			result, err := checker.PerformCheck()
+
+			status := "down"
+			if err == nil {
+				status = fmt.Sprintf("%d", result.StatusCode)
+			}
+
+			_ = db.AddCheck(id, store.CheckResult{
+				StatusCode:   result.StatusCode,
+				ResponseTime: result.ResponseTime,
+				IsUp:         result.IsUp,
+			})
+
+			_ = db.UpdateSiteStatus(
+				id,
+				status,
+				result.ResponseTime,
+				result.IsUp,
+				siteRow.CheckCount+1,
+			)
+
+			updated := store.Site{
+				ID:           id,
+				URL:          siteRow.URL,
+				Status:       status,
+				ResponseTime: result.ResponseTime,
+				IsUp:         result.IsUp,
+				CheckCount:   siteRow.CheckCount + 1,
+			}
+
+			_ = cache.CacheStatus(id, updated, 30*time.Second)
+
+			writeJSON(w, http.StatusOK, updated)
+			return
+		}
+
+		// ---------------- GET SITE ----------------
+		if r.Method == http.MethodGet {
+
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
+
+			cached, err := cache.GetCachedStatus(id)
+			if err == nil {
+				writeJSON(w, http.StatusOK, cached)
+				return
+			}
+
+			siteRow, err := db.GetSite(id)
+			if err != nil {
+				http.Error(w, "site not found", http.StatusNotFound)
+				return
+			}
+
+			_ = cache.CacheStatus(id, siteRow, 30*time.Second)
+
+			writeJSON(w, http.StatusOK, siteRow)
+			return
+		}
+
+		// ---------------- DELETE SITE ----------------
+		if r.Method == http.MethodDelete {
+
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				http.Error(w, "invalid id", http.StatusBadRequest)
+				return
+			}
+
+			_ = db.DeleteSite(id)
+			_ = cache.InvalidateCache(id)
+
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	})
+
+	// ================= FRONTEND =================
 	http.Handle("/", http.FileServer(http.Dir("./static")))
 
-	fmt.Println("Server running on :8081")
-	http.ListenAndServe(":8081", nil)
+	fmt.Println("Server running on: 8081")
+	log.Fatal(http.ListenAndServe(":8081", nil))
 }

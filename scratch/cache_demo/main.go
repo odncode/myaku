@@ -17,7 +17,7 @@ func main() {
 	defer s.Close()
 
 	// --- init cache ---
-	c := store.NewCache()
+	c := store.NewCache("localhost:6379")
 
 	// 1. Add site to Postgres
 	siteID, err := s.AddSite("https://linkedin.com")

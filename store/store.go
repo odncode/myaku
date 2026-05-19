@@ -108,38 +108,29 @@ func (s *Store) GetSite(id int) (Site, error) {
 }
 
 func (s *Store) ListSites() ([]Site, error) {
-
 	rows, err := s.pool.Query(
 		context.Background(),
-		`SELECT
-			id,
-			url,
-			status,
-			is_up,
-			response_time,
-			check_count
-		FROM sites`,
+		`SELECT id, url, status, response_time, is_up, check_count FROM sites`,
 	)
 	if err != nil {
 		return nil, err
 	}
-
 	defer rows.Close()
 
 	var sites []Site
 
 	for rows.Next() {
-
 		var site Site
 
-		if err := rows.Scan(
+		err := rows.Scan(
 			&site.ID,
 			&site.URL,
 			&site.Status,
-			&site.IsUp,
 			&site.ResponseTime,
+			&site.IsUp,
 			&site.CheckCount,
-		); err != nil {
+		)
+		if err != nil {
 			return nil, err
 		}
 
@@ -252,11 +243,11 @@ func (s *Store) UpdateSiteStatus(
 	return err
 }
 
-func NewCache() *Cache {
+func NewCache(addr string) *Cache {
 
 	return &Cache{
 		rdb: redis.NewClient(&redis.Options{
-			Addr: "localhost:6379",
+			Addr: addr,
 		}),
 	}
 }
